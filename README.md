@@ -18,7 +18,7 @@
 2. 进入"过滤器" -> "DNS封锁列表"
 3. 点击"添加阻止列表"
 4. 输入以下URL：
-https://raw.githubusercontent.com/你的用户名/adguard-rules-merger/main/rules/merged_all.txt
+https://raw.githubusercontent.com/KECIHH/adguard-rules-merger/main/rules/merged_all.txt
 5. 点击"保存"
 
 ### 规则分类
