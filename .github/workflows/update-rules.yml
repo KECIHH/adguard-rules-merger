@@ -2,8 +2,8 @@ name: Update AdGuard Rules
 
 on:
   schedule:
-    - cron: '0 3 * * *' # 每天UTC时间3点运行
-  workflow_dispatch: # 允许手动触发
+    - cron: '0 3 * * *'
+  workflow_dispatch:
   push:
     paths:
       - 'sources/sources.txt'
@@ -12,31 +12,29 @@ on:
 jobs:
   update-rules:
     runs-on: ubuntu-latest
+    # 1. 授予写入权限 [citation:8][citation:9]
     permissions:
-      contents: write # 关键：授予工作流写入仓库内容的权限
+      contents: write
 
     steps:
-    # 1. 检出代码（需要包含 write 权限）
-    - name: Checkout code
+    # 2. 首先，检出主分支（包含你的脚本）
+    - name: Checkout main branch (for scripts)
       uses: actions/checkout@v4
       with:
+        ref: main # 明确指定检出主分支
         token: ${{ secrets.GITHUB_TOKEN }}
-        # 检出到 `rules` 分支，如果没有则基于 main 创建
-        ref: rules
 
-    # 2. 设置Python
+    # 3. 设置环境并运行脚本 (和之前一样)
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
 
-    # 3. 安装依赖
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # 4. 运行脚本，生成规则文件
     - name: Run scripts to generate rules
       run: |
         echo "开始更新规则..."
@@ -44,19 +42,27 @@ jobs:
         python scripts/merge_rules.py
         echo "规则生成完成。"
 
-    # 5. 提交并推送到 `rules` 分支
+    # 4. 【核心修改】准备并推送到 rules 分支
     - name: Commit and Push to rules branch
       run: |
         git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-        # 检查是否有新文件生成
+        # 可选：移除可能干扰认证的额外头部 [citation:5]
+        git config --global --unset-all http.https://github.com/.extraheader || true
+
+        # 添加生成的所有规则文件
+        git add -f rules/
+
+        # 检查是否有新文件
         if [ -z "$(git status --porcelain rules/)" ]; then
           echo "没有新的规则文件需要提交。"
-        else
-          # 添加所有规则文件
-          git add rules/
-          git commit -m "🔄 Auto-update rules $(date +'%Y-%m-%d %H:%M:%S')"
-          git push origin HEAD:rules
-          echo "✅ 规则文件已成功更新并推送至 'rules' 分支。"
+          exit 0
         fi
+
+        # 提交更改
+        git commit -m "🔄 Auto-update rules $(date +'%Y-%m-%d %H:%M:%S')"
+
+        # 强制推送到 rules 分支（创建或更新）
+        git push --force https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:rules
+        echo "✅ 规则文件已成功推送至 'rules' 分支。"
