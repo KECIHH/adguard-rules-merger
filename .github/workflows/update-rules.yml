@@ -2,7 +2,7 @@ name: Update AdGuard Rules
 
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '0 9 * * *'
   workflow_dispatch:
   push:
     paths:
