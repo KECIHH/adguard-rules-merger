@@ -12,57 +12,96 @@ on:
 jobs:
   update-rules:
     runs-on: ubuntu-latest
-    # 1. 授予写入权限 [citation:8][citation:9]
     permissions:
       contents: write
 
     steps:
-    # 2. 首先，检出主分支（包含你的脚本）
+    # 1. 检出主分支（包含你的脚本）
     - name: Checkout main branch (for scripts)
       uses: actions/checkout@v4
       with:
-        ref: main # 明确指定检出主分支
+        ref: main
         token: ${{ secrets.GITHUB_TOKEN }}
 
-    # 3. 设置环境并运行脚本 (和之前一样)
+    # 2. 设置环境
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
 
+    # 3. 安装依赖
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    # 4. 运行主脚本，生成完整版规则
     - name: Run scripts to generate rules
       run: |
         echo "开始更新规则..."
         python scripts/fetch_rules.py
         python scripts/merge_rules.py
-        echo "规则生成完成。"
+        echo "完整版规则生成完成。"
 
-    # 4. 【核心修改】准备并推送到 rules 分支
+    # === 以下是新增步骤，用于生成和发布精简版 ===
+    # 4.5 生成精简版规则（依赖于第4步生成的完整版规则）
+    - name: Generate lite (optimized) rules
+      run: |
+        echo "开始为随身WiFi生成精简版规则..."
+        python scripts/optimize_rules.py
+        echo "精简版规则生成完成。"
+
+    # 4.6 提交并推送到 rules-lite 分支
+    - name: Commit and Push to rules-lite branch
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        # 添加生成的精简版规则文件
+        git add -f rules/merged_lite.txt
+        git add -f rules/merged_dns_lite.txt 2>/dev/null || true
+
+        # 检查是否有精简版文件需要提交
+        if [ -z "$(git status --porcelain rules/merged_lite.txt)" ]; then
+          echo "没有新的精简版规则文件需要提交。"
+        else
+          git commit -m "📦 Lite: Auto-update rules $(date +'%Y-%m-%d %H:%M:%S')"
+          # 推送到专门存放精简版的 rules-lite 分支
+          git push --force https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:rules-lite
+          echo "✅ 精简版规则文件已成功推送至 'rules-lite' 分支。"
+        fi
+    # === 新增步骤结束 ===
+
+    # 5. 提交并推送到 rules 分支 (原有步骤，推送完整版)
     - name: Commit and Push to rules branch
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-        # 可选：移除可能干扰认证的额外头部 [citation:5]
+        # 可选：移除可能干扰认证的额外头部
         git config --global --unset-all http.https://github.com/.extraheader || true
 
-        # 添加生成的所有规则文件
+        # 添加生成的所有规则文件（这里主要是完整版）
         git add -f rules/
 
-        # 检查是否有新文件
+        # 检查是否有新文件（注意：这里会包含精简版，但已在上一步提交）
         if [ -z "$(git status --porcelain rules/)" ]; then
           echo "没有新的规则文件需要提交。"
           exit 0
         fi
 
-        # 提交更改
-        git commit -m "🔄 Auto-update rules $(date +'%Y-%m-%d %H:%M:%S')"
-
-        # 强制推送到 rules 分支（创建或更新）
-        git push --force https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:rules
-        echo "✅ 规则文件已成功推送至 'rules' 分支。"
+        # 提交更改 (主要提交完整版，精简版在上一步已单独提交)
+        # 由于上一步已经提交了精简版，这里需要避免重复。
+        # 一个简单的办法是重置并只添加完整版特有的文件。
+        git reset HEAD rules/ 2>/dev/null || true
+        # 明确添加完整版文件（排除精简版）
+        git add rules/merged_all.txt rules/merged_dns.txt
+        
+        # 再次检查是否有需要提交的完整版文件
+        if git diff --staged --quiet; then
+          echo "完整版规则文件没有变化。"
+        else
+          git commit -m "🔄 Full: Auto-update rules $(date +'%Y-%m-%d %H:%M:%S')"
+          git push --force https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:rules
+          echo "✅ 完整版规则文件已成功推送至 'rules' 分支。"
+        fi
