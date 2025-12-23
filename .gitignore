@@ -1,0 +1,15 @@
+# 忽略临时文件夹和文件
+temp/
+*.tmp
+*.log
+
+# 忽略Python缓存和虚拟环境
+__pycache__/
+*.pyc
+.python-version
+venv/
+.env
+
+# 系统文件
+.DS_Store
+Thumbs.db

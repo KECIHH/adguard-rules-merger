@@ -8,7 +8,7 @@ on:
   # 手动触发
   workflow_dispatch:
   
-  # 当sources.txt文件变更时运行
+  # 当规则源或脚本变更时自动运行
   push:
     paths:
       - 'sources/sources.txt'
@@ -19,45 +19,58 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    # 1. 检出代码
-    - name: Checkout code
+    # 1. 检出代码（关键：配置写权限）
+    - name: Checkout code with write permission
       uses: actions/checkout@v3
+      with:
+        # 显式使用GITHUB_TOKEN并允许后续步骤推送
+        token: ${{ secrets.GITHUB_TOKEN }}
+        persist-credentials: true # 此设置让后续的git push能使用同一个令牌
     
-    # 2. 设置Python
+    # 2. 设置Python环境
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
     
-    # 3. 安装依赖
+    # 3. 安装Python依赖
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    # 4. 运行脚本
-    - name: Run scripts
+    # 4. 运行脚本，生成规则文件
+    - name: Run scripts to generate rules
       run: |
         echo "开始更新规则..."
         python scripts/fetch_rules.py
         python scripts/merge_rules.py
         echo "规则更新完成"
     
-    # 5. 提交更改
+    # 5. 提交并推送生成的文件到仓库
     - name: Commit and push changes
       run: |
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "actions@github.com"
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
-        # 1. 强制添加生成的文件
-        git add -f rules/ temp/
+        # 添加生成的文件，-f 参数确保即使被.gitignore也会添加
+        git add -f rules/
         
-        # 2. 检查是否有文件可以提交
+        # 检查是否有新内容可以提交
         if git diff --staged --quiet; then
           echo "没有检测到新的文件变更，跳过提交。"
         else
-          # 3. 提交并推送 (关键：使用已有的认证直接推送)
-          git commit -m "自动更新规则 $(date +'%Y-%m-%d %H:%M:%S')"
+          # 提交变更
+          git commit -m "🔄 自动更新规则 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          # 推送到当前分支
           git push
-          echo "已成功提交并推送变更。"
+          echo "✅ 已成功提交并推送变更到仓库。"
         fi
+    
+    # 6. (可选) 清理临时文件，保持仓库整洁
+    - name: Clean up temporary files (Optional)
+      if: always() # 无论成功失败都执行清理
+      run: |
+        echo "清理临时文件..."
+        rm -rf temp/ 2>/dev/null || true
+        echo "清理完成。"
