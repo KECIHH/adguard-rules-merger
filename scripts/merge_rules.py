@@ -72,7 +72,7 @@ def save_rules(rules, filename, description=""):
             f.write(f"! Version: {datetime.now().strftime('%Y%m%d')}\n")
             f.write(f"! Last modified: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"! Rule count: {len(rules)}\n")
-            f.write(f"! Homepage: https://github.com/你的用户名/adguard-rules-merger\n")
+            f.write(f"! Homepage: https://github.com/KECIHH/adguard-rules-merger\n")
             f.write("!===================================================\n\n")
             
             # 写入规则
