@@ -16,6 +16,12 @@ jobs:
       contents: write
 
     steps:
+    # 新增步骤：设置运行环境的时区为北京时间
+    - name: Set Beijing Timezone
+      uses: szenius/set-timezone@v1.2
+      with:
+        timezoneLinux: "Asia/Shanghai"
+
     # 1. 检出主分支（包含你的脚本）
     - name: Checkout main branch (for scripts)
       uses: actions/checkout@v4
