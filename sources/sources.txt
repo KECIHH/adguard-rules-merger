@@ -12,3 +12,6 @@ https://raw.githubusercontent.com/8680/GOODBYEADS/master/data/rules/dns.txt
 
 # anti-AD
 https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-easylist.txt
+
+# TheBestAdrules
+https://raw.githubusercontent.com/guandasheng/TheBestAdrules/main/rule/all.txt

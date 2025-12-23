@@ -25,7 +25,8 @@ https://raw.githubusercontent.com/KECIHH/adguard-rules-merger/main/rules/merged_
 
 - **merged_all.txt** - 所有规则的合并版本
 - **merged_dns.txt** - 仅DNS过滤规则
-- **merged_element.txt** - 仅元素隐藏规则
+- **merged_dns_lite.txt** - 精简DNS过滤规则
+- **mmerged_lite.txt** - 精简过滤规则
 
 ## 自定义规则源
 
