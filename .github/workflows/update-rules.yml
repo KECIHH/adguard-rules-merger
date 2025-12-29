@@ -2,7 +2,8 @@ name: Update AdGuard Rules
 
 on:
   schedule:
-    - cron: '0 9 * * *'
+    # UTC时间凌晨2点运行，即北京时间上午10点
+    - cron: '0 2 * * *'
   workflow_dispatch:
   push:
     paths:
@@ -16,98 +17,154 @@ jobs:
       contents: write
 
     steps:
-    # 新增步骤：设置运行环境的时区为北京时间
     - name: Set Beijing Timezone
       uses: szenius/set-timezone@v1.2
       with:
         timezoneLinux: "Asia/Shanghai"
 
-    # 1. 检出主分支（包含你的脚本）
-    - name: Checkout main branch (for scripts)
+    # 1. 检出 rules 分支
+    - name: Checkout or Initialize rules branch
+      uses: actions/checkout@v4
+      with:
+        ref: rules
+        path: ./rules-output
+
+    # 2. 返回项目根目录，检出主分支以获取脚本
+    - name: Checkout main branch for scripts
       uses: actions/checkout@v4
       with:
         ref: main
-        token: ${{ secrets.GITHUB_TOKEN }}
+        path: ./
 
-    # 2. 设置环境
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
 
-    # 3. 安装依赖
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # 4. 运行主脚本，生成完整版规则
-    - name: Run scripts to generate rules
+    - name: Generate rules
       run: |
         echo "开始更新规则..."
         python scripts/fetch_rules.py
         python scripts/merge_rules.py
-        echo "完整版规则生成完成。"
-
-    # === 以下是新增步骤，用于生成和发布精简版 ===
-    # 4.5 生成精简版规则（依赖于第4步生成的完整版规则）
-    - name: Generate lite (optimized) rules
-      run: |
-        echo "开始为随身WiFi生成精简版规则..."
         python scripts/optimize_rules.py
-        echo "精简版规则生成完成。"
+        echo "所有规则生成完成。"
 
-    # 4.6 提交并推送到 rules-lite 分支
-    - name: Commit and Push to rules-lite branch
+    - name: Prepare and Organize Rules in rules branch
       run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-        # 添加生成的精简版规则文件
-        git add -f rules/merged_lite.txt
-        git add -f rules/merged_dns_lite.txt 2>/dev/null || true
-
-        # 检查是否有精简版文件需要提交
-        if [ -z "$(git status --porcelain rules/merged_lite.txt)" ]; then
-          echo "没有新的精简版规则文件需要提交。"
-        else
-          git commit -m "📦 Lite: Auto-update rules $(date +'%Y-%m-%d %H:%M:%S')"
-          # 推送到专门存放精简版的 rules-lite 分支
-          git push --force https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:rules-lite
-          echo "✅ 精简版规则文件已成功推送至 'rules-lite' 分支。"
-        fi
-    # === 新增步骤结束 ===
-
-    # 5. 提交并推送到 rules 分支 (原有步骤，推送完整版)
-    - name: Commit and Push to rules branch
-      run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-        # 可选：移除可能干扰认证的额外头部
-        git config --global --unset-all http.https://github.com/.extraheader || true
-
-        # 添加生成的所有规则文件（这里主要是完整版）
-        git add -f rules/
-
-        # 检查是否有新文件（注意：这里会包含精简版，但已在上一步提交）
-        if [ -z "$(git status --porcelain rules/)" ]; then
-          echo "没有新的规则文件需要提交。"
-          exit 0
-        fi
-
-        # 提交更改 (主要提交完整版，精简版在上一步已单独提交)
-        # 由于上一步已经提交了精简版，这里需要避免重复。
-        # 一个简单的办法是重置并只添加完整版特有的文件。
-        git reset HEAD rules/ 2>/dev/null || true
-        # 明确添加完整版文件（排除精简版）
-        git add rules/merged_all.txt rules/merged_dns.txt
+        cd ./rules-output
         
-        # 再次检查是否有需要提交的完整版文件
+        # === 核心优化：自动清理旧文件（保留最近30天）===
+        # 删除超过30天的日期目录，避免仓库无限增长
+        echo "正在清理30天前的历史文件..."
+        find . -maxdepth 1 -type d -name "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]" -mtime +30 | while read old_dir; do
+          echo "删除历史目录: $old_dir"
+          rm -rf "$old_dir"
+        done
+        
+        # 设置日期变量
+        TODAY=$(date +'%Y-%m-%d')
+        
+        # 为今天的规则创建日期目录
+        mkdir -p "./$TODAY/full"
+        mkdir -p "./$TODAY/lite"
+        
+        # 复制新生成的文件
+        cp ../rules/merged_all.txt "./$TODAY/full/"
+        cp ../rules/merged_lite.txt "./$TODAY/lite/"
+        cp ../rules/merge_stats.txt "./$TODAY/full/" 2>/dev/null || true
+        cp ../rules/optimization_stats.txt "./$TODAY/lite/" 2>/dev/null || true
+        
+        # --- 生成或更新索引文件 (index.md) ---
+        if [ ! -f "./index.md" ]; then
+          echo "# 📁 AdGuard 规则仓库索引" > ./index.md
+          echo "" >> ./index.md
+          echo "此分支包含自动生成的 AdGuard 规则文件，按日期和版本分类归档。" >> ./index.md
+          echo "" >> ./index.md
+          echo "**存档策略**：自动保留最近30天的历史文件，更早的文件将被自动清理。" >> ./index.md
+          echo "" >> ./index.md
+          echo "## 📅 最新文件 (适用于快速使用)" >> ./index.md
+          echo "" >> ./index.md
+          echo "| 版本 | 文件 | 规则数量 | 大小 | 生成时间 |" >> ./index.md
+          echo "| :--- | :--- | :--- | :--- | :--- |" >> ./index.md
+        fi
+        
+        # 获取文件的规则行数和大小
+        FULL_COUNT=$(grep -c -v -E '^!|^$' "./$TODAY/full/merged_all.txt" || echo "N/A")
+        LITE_COUNT=$(grep -c -v -E '^!|^$' "./$TODAY/lite/merged_lite.txt" || echo "N/A")
+        FULL_SIZE=$(du -h "./$TODAY/full/merged_all.txt" | cut -f1)
+        LITE_SIZE=$(du -h "./$TODAY/lite/merged_lite.txt" | cut -f1)
+        TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
+        
+        # 使用临时文件安全地更新索引
+        echo "| **完整版** | [$TODAY/full/merged_all.txt](./$TODAY/full/merged_all.txt) | $FULL_COUNT 条 | $FULL_SIZE | $TIMESTAMP |" > /tmp/new_latest_full.md
+        echo "| **精简版** | [$TODAY/lite/merged_lite.txt](./$TODAY/lite/merged_lite.txt) | $LITE_COUNT 条 | $LITE_SIZE | $TIMESTAMP |" > /tmp/new_latest_lite.md
+        
+        # 重建索引文件
+        echo "# 📁 AdGuard 规则仓库索引" > ./index.md
+        echo "" >> ./index.md
+        echo "此分支包含自动生成的 AdGuard 规则文件，按日期和版本分类归档。" >> ./index.md
+        echo "" >> ./index.md
+        echo "**存档策略**：自动保留最近30天的历史文件，更早的文件将被自动清理。" >> ./index.md
+        echo "" >> ./index.md
+        echo "## 📅 最新文件 (适用于快速使用)" >> ./index.md
+        echo "" >> ./index.md
+        echo "| 版本 | 文件 | 规则数量 | 大小 | 生成时间 |" >> ./index.md
+        echo "| :--- | :--- | :--- | :--- | :--- |" >> ./index.md
+        cat /tmp/new_latest_full.md >> ./index.md
+        cat /tmp/new_latest_lite.md >> ./index.md
+        
+        echo "" >> ./index.md
+        echo "## 📚 历史归档 (最近30天)" >> ./index.md
+        echo "" >> ./index.md
+        echo "> 提示：点击日期可展开查看该日生成的所有文件。" >> ./index.md
+        echo "" >> ./index.md
+        
+        # 按日期倒序列出所有历史日期目录（清理后最多30个）
+        for DATE_DIR in $(ls -d 20*/ 2>/dev/null | sort -r); do
+          DATE_DIR=${DATE_DIR%/}
+          if [ "$DATE_DIR" != "$TODAY" ]; then
+            echo "<details>" >> ./index.md
+            echo "<summary><b>$DATE_DIR</b></summary>" >> ./index.md
+            echo "" >> ./index.md
+            echo "| 版本 | 文件 | 大小 |" >> ./index.md
+            echo "| :--- | :--- | :--- |" >> ./index.md
+            if [ -f "./$DATE_DIR/full/merged_all.txt" ]; then
+              SIZE=$(du -h "./$DATE_DIR/full/merged_all.txt" | cut -f1)
+              echo "| 完整版 | [$DATE_DIR/full/merged_all.txt](./$DATE_DIR/full/merged_all.txt) | $SIZE |" >> ./index.md
+            fi
+            if [ -f "./$DATE_DIR/lite/merged_lite.txt" ]; then
+              SIZE=$(du -h "./$DATE_DIR/lite/merged_lite.txt" | cut -f1)
+              echo "| 精简版 | [$DATE_DIR/lite/merged_lite.txt](./$DATE_DIR/lite/merged_lite.txt) | $SIZE |" >> ./index.md
+            fi
+            echo "" >> ./index.md
+            echo "</details>" >> ./index.md
+            echo "" >> ./index.md
+          fi
+        done
+        
+        echo "文件整理、索引及历史清理完成。"
+
+    # 3. 提交并推送
+    - name: Commit and Push All to rules branch
+      run: |
+        cd ./rules-output
+        
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        
+        git add .
+        
         if git diff --staged --quiet; then
-          echo "完整版规则文件没有变化。"
+          echo "没有新的规则文件需要提交。"
         else
-          git commit -m "🔄 Full: Auto-update rules $(date +'%Y-%m-%d %H:%M:%S')"
-          git push --force https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:rules
-          echo "✅ 完整版规则文件已成功推送至 'rules' 分支。"
+          # 在提交信息中注明清理情况
+          git commit -m "📦 Auto-update rules $(date +'%Y-%m-%d %H:%M:%S') [保留30天历史]"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:rules
+          echo "✅ 规则文件已成功推送至 'rules' 分支。"
+          echo "📄 索引页面: https://github.com/${{ github.repository }}/blob/rules/index.md"
         fi
