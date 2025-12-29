@@ -1,187 +1,264 @@
 #!/usr/bin/env python3
 """
-优化规则脚本（智能精简增强版）：为低性能设备生成安全、高效的规则。
-改进点：
-1. 支持命令行参数，可灵活调整目标规则数等。
-2. 增强了文件读取时的错误处理。
-用法示例（在GitHub Actions中会自动使用默认参数）：
-  python scripts/optimize_rules.py --target 80000
-  python scripts/optimize_rules.py --input rules/merged_all.txt --output my_lite.txt --target 150000
+规则精简 v4.2 (GitHub Actions 优化版)
+优化：确定性算法、Git友好、性能优化
 """
 
-import os
-import re
-import sys
-import argparse
-from datetime import datetime
+import time
+from pathlib import Path
 
-def parse_arguments():
-    """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='为低性能设备生成智能精简的AdGuard规则。')
-    parser.add_argument('--input', default='rules/merged_all.txt',
-                        help='输入的完整规则文件路径 (默认: rules/merged_all.txt)')
-    parser.add_argument('--output', default='merged_lite.txt',
-                        help='输出的精简规则文件名 (默认: merged_lite.txt)')
-    parser.add_argument('--target', type=int, default=150000,
-                        help='目标规则数量 (默认: 150000)')
-    parser.add_argument('--dns_output', default='merged_dns_lite.txt',
-                        help='输出的纯DNS精简版文件名 (默认: merged_dns_lite.txt)')
-    return parser.parse_args()
+TARGET_RULES = 150000
+MIN_RULES = 100000
+MAX_RULES = 200000
 
-def read_rules(filepath):
-    """读取规则文件，返回规则列表和文件头（增强错误处理）"""
-    rules = []
-    header_lines = []
-    in_header = True
+# 重要关键词（提高保留优先级）
+IMPORTANT_KEYWORDS = {
+    'doubleclick', 'google-analytics', 'facebook', 'tracking',
+    'adsystem', 'adservice', 'adserver', 'analytics',
+    'cookie', 'beacon', 'pixel', 'metrics', 'telemetry',
+    'spyware', 'malware', 'phishing', 'malicious',
+}
 
-    # 检查文件是否存在
-    if not os.path.exists(filepath):
-        print(f"❌ 错误：输入文件 '{filepath}' 不存在。")
-        print("   请确保上游的 merge_rules.py 脚本已成功运行并生成了完整规则文件。")
-        sys.exit(1)  # 退出并通知工作流失败
+# 通用域名（降低优先级）
+COMMON_DOMAINS = {
+    'google', 'youtube', 'facebook', 'twitter', 'instagram',
+    'amazon', 'microsoft', 'apple', 'cloudflare', 'akamai',
+}
 
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+class RuleOptimizer:
+    def __init__(self):
+        self.allow_rules = []   # 允许规则（全部保留）
+        self.block_rules = []   # 阻止规则（需要筛选）
+        self.stats = {
+            'total': 0,
+            'allow': 0,
+            'block': 0,
+            'selected': 0,
+        }
+    
+    def load_rules(self, input_file):
+        """加载规则文件"""
+        print(f"加载规则文件: {input_file}")
+        
+        with open(input_file, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                if in_header and (line.startswith('!') or line == ''):
-                    header_lines.append(line)
+                if not line or line.startswith('!'):
+                    continue
+                
+                self.stats['total'] += 1
+                
+                if line.startswith('@@'):
+                    self.allow_rules.append(line)
+                    self.stats['allow'] += 1
                 else:
-                    in_header = False
-                    if line and not line.startswith('!'):
-                        rules.append(line)
-        print(f"✅ 从 {filepath} 读取了 {len(rules)} 条有效规则")
-        return header_lines, rules
-    except UnicodeDecodeError:
-        print(f"❌ 错误：文件 '{filepath}' 编码问题，无法用UTF-8读取。")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ 读取文件时发生未知错误: {e}")
-        sys.exit(1)
-
-def optimize_smart_lite(rules, target_count):
-    """智能精简核心策略（与原脚本逻辑完全一致）"""
-    allowlist_rules = []
-    hosts_rules = []
-    efficient_block_rules = []
-    other_rules = []
-
-    print("正在执行智能分类与过滤...")
-    for rule in rules:
-        if rule.startswith('/') and rule.endswith('/'):
-            continue
-        if '##' in rule or '#@#' in rule or '#?#' in rule:
-            continue
-        if rule.startswith('@@'):
-            allowlist_rules.append(rule)
-            continue
+                    self.block_rules.append(line)
+                    self.stats['block'] += 1
+        
+        print(f"加载完成: 总共 {self.stats['total']:,} 条规则")
+        print(f"  允许规则: {self.stats['allow']:,}")
+        print(f"  阻止规则: {self.stats['block']:,}")
+    
+    def calculate_rule_score(self, rule):
+        """
+        计算规则评分（分数越低越重要）
+        注意：这是确定性的，不包含随机性
+        """
+        score = 0
+        rule_lower = rule.lower()
+        
+        # 基础评分
         if rule.startswith('||') and rule.endswith('^'):
-            efficient_block_rules.append(rule)
-            continue
-        parts = rule.split()
-        if len(parts) >= 2:
-            first_part = parts[0]
-            if (re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', first_part) or
-                re.match(r'^[0-9a-fA-F:]+$', first_part)):
-                hosts_rules.append(rule)
-                continue
-        other_rules.append(rule)
-
-    print(f"  分类完成:")
-    print(f"  ✅ 白名单规则: {len(allowlist_rules)} 条")
-    print(f"  ✅ Hosts格式规则: {len(hosts_rules)} 条")
-    print(f"  ✅ 高效DNS拦截规则: {len(efficient_block_rules)} 条")
-    print(f"  ⚠️  其他规则: {len(other_rules)} 条")
-
-    final_rules = []
-    final_rules.extend(allowlist_rules)
-    final_rules.extend(hosts_rules)
-    essential_count = len(final_rules)
-    print(f"\n  已保留 {essential_count} 条核心规则 (白名单+Hosts)。")
-
-    remaining_quota = target_count - essential_count
-    if remaining_quota <= 0:
-        print(f"  注意：核心规则数({essential_count})已超过目标({target_count})，将只保留核心规则。")
-        return final_rules[:target_count]
-
-    if efficient_block_rules:
-        take = min(remaining_quota, len(efficient_block_rules))
-        final_rules.extend(efficient_block_rules[:take])
-        remaining_quota -= take
-        print(f"  加入 {take} 条高效DNS拦截规则。")
-
-    if remaining_quota > 0 and other_rules:
-        take = min(remaining_quota, len(other_rules))
-        final_rules.extend(other_rules[:take])
-        print(f"  加入 {take} 条其他规则。")
-
-    print(f"\n  最终精简规则数: {len(final_rules)} 条 (目标: {target_count} 条)")
-    return final_rules
-
-def save_rules(header_lines, rules, filename, description):
-    """保存规则到文件"""
-    try:
-        os.makedirs('rules', exist_ok=True)
-        with open(f'rules/{filename}', 'w', encoding='utf-8') as f:
-            for line in header_lines:
-                if 'Title:' in line:
-                    f.write(f"! Title: {description}\n")
-                elif 'Description:' in line:
-                    f.write(f"! Description: 智能精简版 - 专为低性能设备优化，保留白名单，剔除正则/元素隐藏规则\n")
-                elif 'Rule count:' in line:
-                    f.write(f"! Rule count: {len(rules)}\n")
-                elif 'Last modified:' in line:
-                    f.write(f"! Last modified: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                else:
-                    f.write(f"{line}\n")
-            for rule in rules:
-                f.write(f"{rule}\n")
-        print(f"✅ 已保存精简规则到 rules/{filename} ({len(rules)} 条)")
+            score -= 50  # 域名规则优先
+        
+        # 重要关键词检查（累积加分，不全用break）
+        important_hits = 0
+        for keyword in IMPORTANT_KEYWORDS:
+            if keyword in rule_lower:
+                important_hits += 1
+        
+        if important_hits > 0:
+            score -= 30 * min(important_hits, 3)  # 最多减90分
+        
+        # 通用域名检查
+        common_hits = 0
+        for domain in COMMON_DOMAINS:
+            if domain in rule_lower:
+                common_hits += 1
+        
+        if common_hits > 0:
+            score += 20 * min(common_hits, 2)  # 最多加40分
+        
+        # 规则长度
+        rule_len = len(rule)
+        if rule_len < 20:
+            score -= 10  # 短规则优先
+        elif rule_len > 100:
+            score += 15  # 过长规则降低优先级
+        
+        # 规则复杂度
+        if '*' in rule:
+            score += 5  # 通配符规则降低优先级
+        
+        if '$' in rule:
+            if 'third-party' in rule:
+                score -= 5  # 第三方规则优先
+            if 'important' in rule:
+                score -= 20  # 重要标记规则优先
+        
+        # 正则表达式规则
+        if rule.startswith('/') and rule.endswith('/'):
+            score += 10  # 正则规则降低优先级
+        
+        return score
+    
+    def is_rule_effective(self, rule):
+        """检查规则是否有效（不过于宽泛）"""
+        # 过滤过于宽泛的规则
+        if rule.count('*') > 3:
+            return False
+        
+        # 移除通配符和特殊字符后检查
+        clean = rule.replace('*', '').replace('.', '').replace('^', '').replace('/', '').strip()
+        if len(clean) < 3:
+            return False
+        
+        # 过滤特定无效模式
+        invalid_patterns = ['*.*', '*', '.*', '/*/']
+        for pattern in invalid_patterns:
+            if pattern == rule:
+                return False
+        
         return True
-    except Exception as e:
-        print(f"❌ 保存文件 '{filename}' 失败: {e}")
-        return False
+    
+    def select_top_rules(self, rules, target_count):
+        """选择最优规则（确定性算法）"""
+        if len(rules) <= target_count:
+            return sorted(rules)  # 保持确定性排序
+        
+        # 评分并排序
+        scored = []
+        for rule in rules:
+            if not self.is_rule_effective(rule):
+                continue
+            
+            score = self.calculate_rule_score(rule)
+            # 使用 (score, rule) 元组，确保相同分数时按字母序排序
+            scored.append((score, rule))
+        
+        # 按分数升序（分数越低越重要），然后按字母序
+        scored.sort(key=lambda x: (x[0], x[1]))
+        
+        # 选择前 target_count 个
+        selected = [rule for _, rule in scored[:target_count]]
+        
+        # 按字母序排序，确保 Git Diff 最小化
+        selected.sort()
+        return selected
+    
+    def optimize(self):
+        """执行优化"""
+        print("\n开始优化规则...")
+        
+        # 1. 保留所有允许规则
+        selected_allow = sorted(self.allow_rules)  # 确定性排序
+        
+        # 2. 计算需要选择的阻止规则数量
+        max_block_rules = MAX_RULES - len(selected_allow)
+        target_block_rules = min(
+            max(TARGET_RULES - len(selected_allow), MIN_RULES - len(selected_allow)),
+            max_block_rules,
+            len(self.block_rules)  # 不能超过实际数量
+        )
+        
+        print(f"目标规则数: {TARGET_RULES:,}")
+        print(f"需要选择的阻止规则: {target_block_rules:,}")
+        
+        # 3. 选择最优的阻止规则
+        selected_block = self.select_top_rules(self.block_rules, target_block_rules)
+        
+        # 4. 合并规则
+        final_rules = selected_allow + selected_block
+        self.stats['selected'] = len(final_rules)
+        
+        return final_rules, len(selected_block)
+    
+    def save_rules(self, rules, output_file):
+        """保存优化后的规则"""
+        print(f"\n保存优化规则到: {output_file}")
+        
+        with open(output_file, 'w', encoding='utf-8', newline='\n') as f:
+            # 文件头
+            f.write("! 优化规则文件\n")
+            f.write(f"! 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"! 原始规则: {self.stats['total']:,}\n")
+            f.write(f"! 优化后规则: {self.stats['selected']:,}\n")
+            f.write(f"! 精简比例: {1 - self.stats['selected']/self.stats['total']:.1%}\n")
+            f.write("!\n\n")
+            
+            # 允许规则
+            if self.stats['allow'] > 0:
+                f.write("! === 允许规则 ===\n")
+                for rule in rules:
+                    if rule.startswith('@@'):
+                        f.write(f"{rule}\n")
+                f.write("\n")
+            
+            # 阻止规则
+            f.write("! === 阻止规则 ===\n")
+            for rule in rules:
+                if not rule.startswith('@@'):
+                    f.write(f"{rule}\n")
+        
+        print(f"保存完成: {len(rules):,} 条规则")
+    
+    def print_stats(self, selected_block_count):
+        """打印统计信息"""
+        print("\n" + "="*60)
+        print("优化统计:")
+        print("-"*60)
+        print(f"原始总规则: {self.stats['total']:,}")
+        print(f"  允许规则: {self.stats['allow']:,} (保留全部)")
+        print(f"  阻止规则: {self.stats['block']:,}")
+        print(f"  选择的阻止规则: {selected_block_count:,}")
+        print(f"最终规则数: {self.stats['selected']:,}")
+        
+        if self.stats['total'] > 0:
+            ratio = 1 - self.stats['selected'] / self.stats['total']
+            print(f"精简比例: {ratio:.1%}")
+        print("="*60)
 
 def main():
     """主函数"""
-    print("=== 开始生成智能精简规则 (为低性能设备优化) ===")
-
-    args = parse_arguments()
-    print(f"  输入文件: {args.input}")
-    print(f"  输出文件: {args.output}")
-    print(f"  目标规则数: {args.target}")
-
-    header, all_rules = read_rules(args.input)
-    if not all_rules:
-        print("错误：没有读取到任何有效规则。")
-        sys.exit(1)
-
-    print(f"\n完整规则数: {len(all_rules)} 条")
-    print("执行策略: 智能精简 (保留白名单/去除正则&元素隐藏/优先高效规则)")
-
-    optimized_rules = optimize_smart_lite(all_rules, args.target)
-
-    print(f"\n正在保存通用精简规则...")
-    save_rules(header, optimized_rules, args.output, "AdGuard规则智能精简版")
-
-    # 生成纯DNS精简版（可选）
-    print(f"\n正在生成‘纯DNS精简版’...")
-    pure_dns_rules = []
-    for rule in optimized_rules:
-        if (rule.startswith('@@') or
-            (rule.startswith('||') and rule.endswith('^')) or
-            (len(rule.split()) >= 2 and rule.split()[0].count('.') == 3)):
-            pure_dns_rules.append(rule)
-
-    if len(pure_dns_rules) < len(optimized_rules) * 0.9:
-        print(f"  纯DNS版进一步精简了 {len(optimized_rules) - len(pure_dns_rules)} 条规则。")
-        dns_header = [line.replace('智能精简版', '纯DNS智能精简版') if 'Title:' in line else line for line in header]
-        save_rules(dns_header, pure_dns_rules, args.dns_output, "AdGuard纯DNS规则精简版")
-    else:
-        print("  纯DNS版规则数量变化不大，不单独保存。")
-
-    print("\n=== 智能精简规则生成完成 ===")
-    print("提示：可在GitHub Actions的`Generate lite rules`步骤中修改`--target`参数调整规模。")
+    start_time = time.time()
+    
+    # 文件路径
+    input_file = Path("rules/merged_all.txt")
+    output_file = Path("rules/merged_lite.txt")
+    
+    if not input_file.exists():
+        print(f"错误: 输入文件不存在: {input_file}")
+        return
+    
+    # 优化规则
+    optimizer = RuleOptimizer()
+    optimizer.load_rules(input_file)
+    
+    final_rules, selected_block_count = optimizer.optimize()
+    optimizer.save_rules(final_rules, output_file)
+    optimizer.print_stats(selected_block_count)
+    
+    # 保存详细统计
+    stats_file = Path("rules/optimization_stats.txt")
+    with open(stats_file, 'w', encoding='utf-8') as f:
+        f.write(f"优化时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"目标规则数: {TARGET_RULES}\n")
+        f.write(f"原始规则数: {optimizer.stats['total']}\n")
+        f.write(f"最终规则数: {optimizer.stats['selected']}\n")
+        f.write(f"精简比例: {1 - optimizer.stats['selected']/optimizer.stats['total']:.1%}\n")
+    
+    elapsed = time.time() - start_time
+    print(f"\n总耗时: {elapsed:.1f}秒")
 
 if __name__ == "__main__":
     main()

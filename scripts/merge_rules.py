@@ -1,138 +1,216 @@
 #!/usr/bin/env python3
 """
-合并和去重规则的脚本
+规则合并 v4.2 (优化版)
+优化：纯 set 去重、内存优化、更好的排序
 """
 
-import os
-import re
-from datetime import datetime
+import time
+from pathlib import Path
+from collections import defaultdict
 
-def load_rules_from_file(filename):
-    """从文件加载规则"""
-    rules = []
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('!'):
-                    # 简单的清理
-                    line = line.split('#')[0].strip()  # 移除行内注释
-                    if line:
-                        rules.append(line)
-        return rules
-    except Exception as e:
-        print(f"读取文件失败 {filename}: {e}")
-        return []
+TEMP_DIR = Path("temp")
+OUTPUT_DIR = Path("rules")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
-def remove_duplicates(rules):
-    """去除重复规则"""
-    unique_rules = []
-    seen = set()
+class RuleProcessor:
+    def __init__(self):
+        self.rules = set()  # 直接使用 set，Python 的哈希优化足够好
+        self.stats = {
+            'total_lines': 0,
+            'comment_lines': 0,
+            'duplicates': 0,
+            'invalid_lines': 0,
+        }
+        self.category_counts = defaultdict(int)
     
-    for rule in rules:
-        if rule not in seen:
-            seen.add(rule)
-            unique_rules.append(rule)
-    
-    print(f"去重前: {len(rules)} 条规则")
-    print(f"去重后: {len(unique_rules)} 条规则")
-    print(f"移除重复: {len(rules) - len(unique_rules)} 条")
-    
-    return unique_rules
-
-def categorize_rules(rules):
-    """分类规则"""
-    dns_rules = []  # DNS过滤规则
-    element_rules = []  # 元素隐藏规则
-    other_rules = []  # 其他规则
-    
-    for rule in rules:
-        # DNS过滤规则（常见格式）
-        if rule.startswith('||') or rule.endswith('^'):
-            dns_rules.append(rule)
-        # 元素隐藏规则
-        elif '##' in rule or '#@#' in rule:
-            element_rules.append(rule)
-        # 其他规则
+    def get_rule_category(self, rule):
+        """快速规则分类"""
+        if rule.startswith('@@'):
+            return 'allow'
+        elif rule.startswith('/') and rule.endswith('/'):
+            return 'regex'
+        elif rule.startswith('||') and rule.endswith('^'):
+            return 'domain'
+        elif rule.startswith(('0.0.0.0 ', '127.0.0.1 ', '::1 ')):
+            return 'hosts'
         else:
-            other_rules.append(rule)
+            return 'other'
     
-    return dns_rules, element_rules, other_rules
-
-def save_rules(rules, filename, description=""):
-    """保存规则到文件"""
-    try:
-        # 确保目录存在
-        os.makedirs('rules', exist_ok=True)
+    def normalize_rule(self, line):
+        """标准化规则"""
+        # 移除行内注释
+        if '!' in line:
+            line = line.split('!', 1)[0]
         
-        with open(f'rules/{filename}', 'w', encoding='utf-8') as f:
-            # 写入文件头
-            f.write(f"! Title: {description}\n")
-            f.write(f"! Description: 合并去重的AdGuard规则\n")
-            f.write(f"! Version: {datetime.now().strftime('%Y%m%d')}\n")
-            f.write(f"! Last modified: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"! Rule count: {len(rules)}\n")
-            f.write(f"! Homepage: https://github.com/KECIHH/adguard-rules-merger\n")
-            f.write("!===================================================\n\n")
+        line = line.strip()
+        if not line:
+            return None
+        
+        # 处理 $ 选项
+        if '$' in line:
+            parts = line.split('$', 1)
+            main = parts[0].strip()
+            options = parts[1].strip()
+            # 标准化选项顺序（按字母排序，保证一致性）
+            if ',' in options:
+                opts = sorted([opt.strip() for opt in options.split(',')])
+                options = ','.join(opts)
+            return f"{main}${options}"
+        
+        return line
+    
+    def process_file(self, file_path):
+        """处理单个文件"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    self.stats['total_lines'] += 1
+                    
+                    line = line.rstrip('\n')
+                    if not line:
+                        continue
+                    
+                    if line.startswith('!'):
+                        self.stats['comment_lines'] += 1
+                        continue
+                    
+                    rule = self.normalize_rule(line)
+                    if not rule:
+                        self.stats['invalid_lines'] += 1
+                        continue
+                    
+                    if rule in self.rules:
+                        self.stats['duplicates'] += 1
+                    else:
+                        self.rules.add(rule)
+                        category = self.get_rule_category(rule)
+                        self.category_counts[category] += 1
+                        
+        except UnicodeDecodeError:
+            # 尝试其他编码
+            try:
+                with open(file_path, 'r', encoding='latin-1') as f:
+                    for line in f:
+                        self.stats['total_lines'] += 1
+                        
+                        line = line.rstrip('\n')
+                        if not line or line.startswith('!'):
+                            continue
+                        
+                        rule = self.normalize_rule(line)
+                        if rule and rule not in self.rules:
+                            self.rules.add(rule)
+                            category = self.get_rule_category(rule)
+                            self.category_counts[category] += 1
+            except:
+                self.stats['invalid_lines'] += 1
+                print(f"无法解码文件: {file_path.name}")
+    
+    def sort_key(self, rule):
+        """排序键函数"""
+        category = self.get_rule_category(rule)
+        
+        # 优先级顺序：allow > regex > domain > hosts > other
+        priority = {
+            'allow': 0,
+            'regex': 1,
+            'domain': 2,
+            'hosts': 3,
+            'other': 4,
+        }.get(category, 5)
+        
+        # 对于允许规则，按原样排序
+        if category == 'allow':
+            return (priority, rule)
+        
+        # 其他规则按长度和内容排序
+        return (priority, len(rule), rule)
+    
+    def save_rules(self, output_path):
+        """保存合并后的规则"""
+        print(f"正在排序 {len(self.rules):,} 条规则...")
+        
+        sorted_rules = sorted(self.rules, key=self.sort_key)
+        
+        print(f"正在写入文件...")
+        with open(output_path, 'w', encoding='utf-8', newline='\n') as f:
+            # 文件头
+            f.write(f"! 规则合并文件\n")
+            f.write(f"! 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"! 总规则数: {len(sorted_rules):,}\n")
+            f.write("!\n")
             
-            # 写入规则
-            for rule in sorted(rules):
+            # 按分类写入
+            current_category = None
+            for rule in sorted_rules:
+                category = self.get_rule_category(rule)
+                if category != current_category:
+                    f.write(f"\n! === {category.upper()} 规则 ({self.category_counts[category]:,}) ===\n")
+                    current_category = category
                 f.write(f"{rule}\n")
-        
-        print(f"已保存到 rules/{filename}")
-        return True
-    except Exception as e:
-        print(f"保存文件失败: {e}")
-        return False
+    
+    def print_stats(self):
+        """打印统计信息"""
+        print("\n" + "="*60)
+        print("合并统计:")
+        print("-"*60)
+        print(f"处理总行数: {self.stats['total_lines']:,}")
+        print(f"注释行数: {self.stats['comment_lines']:,}")
+        print(f"重复规则: {self.stats['duplicates']:,}")
+        print(f"无效行数: {self.stats['invalid_lines']:,}")
+        print(f"唯一规则: {len(self.rules):,}")
+        print("\n规则分类:")
+        print("-"*60)
+        total = sum(self.category_counts.values())
+        for category in ['allow', 'regex', 'domain', 'hosts', 'other']:
+            count = self.category_counts[category]
+            if count > 0:
+                percentage = count / total * 100
+                print(f"  {category:10}: {count:>8,} ({percentage:5.1f}%)")
+        print("="*60)
 
 def main():
     """主函数"""
-    print("=== 开始合并规则 ===")
+    start_time = time.time()
     
-    # 检查临时文件
-    if not os.path.exists('temp'):
-        print("错误：请先运行 fetch_rules.py")
+    if not TEMP_DIR.exists():
+        print(f"错误: 临时目录不存在: {TEMP_DIR}")
         return
     
-    # 收集所有规则
-    all_rules = []
-    temp_files = [f for f in os.listdir('temp') if f.startswith('rule_')]
-    
-    for filename in temp_files:
-        filepath = os.path.join('temp', filename)
-        rules = load_rules_from_file(filepath)
-        all_rules.extend(rules)
-        print(f"从 {filename} 加载了 {len(rules)} 条规则")
-    
-    if not all_rules:
-        print("没有找到任何规则")
+    # 获取所有规则文件
+    rule_files = list(TEMP_DIR.glob("*.txt"))
+    if not rule_files:
+        print("错误: 没有找到规则文件")
         return
     
-    # 去重
-    print("\n=== 去重处理 ===")
-    unique_rules = remove_duplicates(all_rules)
+    print(f"找到 {len(rule_files)} 个规则文件")
     
-    # 分类
-    print("\n=== 规则分类 ===")
-    dns_rules, element_rules, other_rules = categorize_rules(unique_rules)
+    # 处理文件
+    processor = RuleProcessor()
     
-    print(f"DNS过滤规则: {len(dns_rules)} 条")
-    print(f"元素隐藏规则: {len(element_rules)} 条")
-    print(f"其他规则: {len(other_rules)} 条")
+    for i, file_path in enumerate(rule_files, 1):
+        print(f"[{i:3}/{len(rule_files)}] 处理: {file_path.name:<30}", end='\r')
+        processor.process_file(file_path)
     
-    # 保存合并的规则
-    print("\n=== 保存规则 ===")
-    if dns_rules:
-        save_rules(dns_rules, "merged_dns.txt", "合并的DNS过滤规则")
+    print()  # 换行
+    processor.print_stats()
     
-    if element_rules:
-        save_rules(element_rules, "merged_element.txt", "合并的元素隐藏规则")
+    # 保存结果
+    output_file = OUTPUT_DIR / "merged_all.txt"
+    processor.save_rules(output_file)
+    print(f"规则已保存到: {output_file}")
     
-    # 保存全部规则
-    save_rules(unique_rules, "merged_all.txt", "全部合并规则")
+    # 保存统计
+    stats_file = OUTPUT_DIR / "merge_stats.txt"
+    with open(stats_file, 'w', encoding='utf-8') as f:
+        f.write(f"合并时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"源文件数: {len(rule_files)}\n")
+        f.write(f"最终规则数: {len(processor.rules):,}\n")
+        for category, count in processor.category_counts.items():
+            f.write(f"{category}: {count}\n")
     
-    print("\n=== 完成 ===")
-    print(f"总共生成 {len(unique_rules)} 条唯一规则")
+    elapsed = time.time() - start_time
+    print(f"\n总耗时: {elapsed:.1f}秒")
 
 if __name__ == "__main__":
     main()
