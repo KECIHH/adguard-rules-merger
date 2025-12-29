@@ -22,19 +22,18 @@ jobs:
       with:
         timezoneLinux: "Asia/Shanghai"
 
-    # 1. 检出 rules 分支
-    - name: Checkout or Initialize rules branch
-      uses: actions/checkout@v4
-      with:
-        ref: rules
-        path: ./rules-output
-
-    # 2. 返回项目根目录，检出主分支以获取脚本
-    - name: Checkout main branch for scripts
+    # 1. 检出主分支（包含脚本）到默认工作区
+    - name: Checkout main branch (scripts)
       uses: actions/checkout@v4
       with:
         ref: main
-        path: ./
+
+    # 2. 并行检出 rules 分支到子目录，用于后续提交
+    - name: Checkout rules branch (for output)
+      uses: actions/checkout@v4
+      with:
+        ref: rules
+        path: rules-output
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -46,6 +45,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    # 3. 在工作区根目录运行脚本生成规则文件
     - name: Generate rules
       run: |
         echo "开始更新规则..."
@@ -54,14 +54,15 @@ jobs:
         python scripts/optimize_rules.py
         echo "所有规则生成完成。"
 
-    - name: Prepare and Organize Rules in rules branch
+    # 4. 在 rules-output 目录中整理并归档文件
+    - name: Prepare and Organize Rules
       run: |
+        # 进入 rules 分支的工作目录
         cd ./rules-output
         
         # === 核心优化：自动清理旧文件（保留最近30天）===
-        # 删除超过30天的日期目录，避免仓库无限增长
         echo "正在清理30天前的历史文件..."
-        find . -maxdepth 1 -type d -name "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]" -mtime +30 | while read old_dir; do
+        find . -maxdepth 1 -type d -name "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]" -mtime +30 2>/dev/null | while read old_dir; do
           echo "删除历史目录: $old_dir"
           rm -rf "$old_dir"
         done
@@ -73,13 +74,14 @@ jobs:
         mkdir -p "./$TODAY/full"
         mkdir -p "./$TODAY/lite"
         
-        # 复制新生成的文件
+        # 注意：从工作区根目录复制新生成的文件到 output 目录
         cp ../rules/merged_all.txt "./$TODAY/full/"
         cp ../rules/merged_lite.txt "./$TODAY/lite/"
         cp ../rules/merge_stats.txt "./$TODAY/full/" 2>/dev/null || true
         cp ../rules/optimization_stats.txt "./$TODAY/lite/" 2>/dev/null || true
         
         # --- 生成或更新索引文件 (index.md) ---
+        # 如果索引文件不存在，创建它并写入初始内容
         if [ ! -f "./index.md" ]; then
           echo "# 📁 AdGuard 规则仓库索引" > ./index.md
           echo "" >> ./index.md
@@ -93,16 +95,16 @@ jobs:
           echo "| :--- | :--- | :--- | :--- | :--- |" >> ./index.md
         fi
         
-        # 获取文件的规则行数和大小
-        FULL_COUNT=$(grep -c -v -E '^!|^$' "./$TODAY/full/merged_all.txt" || echo "N/A")
-        LITE_COUNT=$(grep -c -v -E '^!|^$' "./$TODAY/lite/merged_lite.txt" || echo "N/A")
-        FULL_SIZE=$(du -h "./$TODAY/full/merged_all.txt" | cut -f1)
-        LITE_SIZE=$(du -h "./$TODAY/lite/merged_lite.txt" | cut -f1)
-        TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
+        # 获取文件的规则行数 (跳过注释行和空行)
+        FULL_COUNT=$(grep -c -v -E '^!|^$' "./$TODAY/full/merged_all.txt" 2>/dev/null || echo "N/A")
+        LITE_COUNT=$(grep -c -v -E '^!|^$' "./$TODAY/lite/merged_lite.txt" 2>/dev/null || echo "N/A")
         
-        # 使用临时文件安全地更新索引
-        echo "| **完整版** | [$TODAY/full/merged_all.txt](./$TODAY/full/merged_all.txt) | $FULL_COUNT 条 | $FULL_SIZE | $TIMESTAMP |" > /tmp/new_latest_full.md
-        echo "| **精简版** | [$TODAY/lite/merged_lite.txt](./$TODAY/lite/merged_lite.txt) | $LITE_COUNT 条 | $LITE_SIZE | $TIMESTAMP |" > /tmp/new_latest_lite.md
+        # 获取文件大小
+        FULL_SIZE=$(du -h "./$TODAY/full/merged_all.txt" 2>/dev/null | cut -f1)
+        LITE_SIZE=$(du -h "./$TODAY/lite/merged_lite.txt" 2>/dev/null | cut -f1)
+        
+        # 生成时间戳
+        TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
         
         # 重建索引文件
         echo "# 📁 AdGuard 规则仓库索引" > ./index.md
@@ -115,8 +117,8 @@ jobs:
         echo "" >> ./index.md
         echo "| 版本 | 文件 | 规则数量 | 大小 | 生成时间 |" >> ./index.md
         echo "| :--- | :--- | :--- | :--- | :--- |" >> ./index.md
-        cat /tmp/new_latest_full.md >> ./index.md
-        cat /tmp/new_latest_lite.md >> ./index.md
+        echo "| **完整版** | [$TODAY/full/merged_all.txt](./$TODAY/full/merged_all.txt) | $FULL_COUNT 条 | $FULL_SIZE | $TIMESTAMP |" >> ./index.md
+        echo "| **精简版** | [$TODAY/lite/merged_lite.txt](./$TODAY/lite/merged_lite.txt) | $LITE_COUNT 条 | $LITE_SIZE | $TIMESTAMP |" >> ./index.md
         
         echo "" >> ./index.md
         echo "## 📚 历史归档 (最近30天)" >> ./index.md
@@ -126,7 +128,7 @@ jobs:
         
         # 按日期倒序列出所有历史日期目录（清理后最多30个）
         for DATE_DIR in $(ls -d 20*/ 2>/dev/null | sort -r); do
-          DATE_DIR=${DATE_DIR%/}
+          DATE_DIR=${DATE_DIR%/} # 移除结尾的斜杠
           if [ "$DATE_DIR" != "$TODAY" ]; then
             echo "<details>" >> ./index.md
             echo "<summary><b>$DATE_DIR</b></summary>" >> ./index.md
@@ -134,11 +136,11 @@ jobs:
             echo "| 版本 | 文件 | 大小 |" >> ./index.md
             echo "| :--- | :--- | :--- |" >> ./index.md
             if [ -f "./$DATE_DIR/full/merged_all.txt" ]; then
-              SIZE=$(du -h "./$DATE_DIR/full/merged_all.txt" | cut -f1)
+              SIZE=$(du -h "./$DATE_DIR/full/merged_all.txt" 2>/dev/null | cut -f1)
               echo "| 完整版 | [$DATE_DIR/full/merged_all.txt](./$DATE_DIR/full/merged_all.txt) | $SIZE |" >> ./index.md
             fi
             if [ -f "./$DATE_DIR/lite/merged_lite.txt" ]; then
-              SIZE=$(du -h "./$DATE_DIR/lite/merged_lite.txt" | cut -f1)
+              SIZE=$(du -h "./$DATE_DIR/lite/merged_lite.txt" 2>/dev/null | cut -f1)
               echo "| 精简版 | [$DATE_DIR/lite/merged_lite.txt](./$DATE_DIR/lite/merged_lite.txt) | $SIZE |" >> ./index.md
             fi
             echo "" >> ./index.md
@@ -147,24 +149,27 @@ jobs:
           fi
         done
         
-        echo "文件整理、索引及历史清理完成。"
+        echo "文件已整理并索引完成。"
 
-    # 3. 提交并推送
+    # 5. 提交并推送所有更改到 rules 分支
     - name: Commit and Push All to rules branch
       run: |
         cd ./rules-output
         
+        # 配置Git用户
         git config --global user.name "github-actions[bot]"
         git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
         
+        # 添加所有文件
         git add .
         
+        # 检查是否有变更
         if git diff --staged --quiet; then
           echo "没有新的规则文件需要提交。"
         else
-          # 在提交信息中注明清理情况
+          # 提交并推送
           git commit -m "📦 Auto-update rules $(date +'%Y-%m-%d %H:%M:%S') [保留30天历史]"
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:rules
-          echo "✅ 规则文件已成功推送至 'rules' 分支。"
+          echo "✅ 所有规则文件已成功推送至 'rules' 分支。"
           echo "📄 索引页面: https://github.com/${{ github.repository }}/blob/rules/index.md"
         fi
