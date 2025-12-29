@@ -28,7 +28,7 @@ jobs:
       with:
         ref: main
 
-    # 2. 并行检出 rules 分支到子目录，用于后续提交
+    # 2. 检出 rules 分支到子目录，用于存放最终规则
     - name: Checkout rules branch (for output)
       uses: actions/checkout@v4
       with:
@@ -45,7 +45,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # 3. 在工作区根目录运行脚本生成规则文件
+    # 3. 在工作区根目录运行脚本，生成规则文件
     - name: Generate rules
       run: |
         echo "开始更新规则..."
@@ -57,77 +57,78 @@ jobs:
     # 4. 在 rules-output 目录中整理并归档文件
     - name: Prepare and Organize Rules
       run: |
-        # 进入 rules 分支的工作目录
         cd ./rules-output
-        
-        # === 核心优化：自动清理旧文件（保留最近30天）===
-        echo "正在清理30天前的历史文件..."
-        find . -maxdepth 1 -type d -name "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]" -mtime +30 2>/dev/null | while read old_dir; do
-          echo "删除历史目录: $old_dir"
-          rm -rf "$old_dir"
-        done
         
         # 设置日期变量
         TODAY=$(date +'%Y-%m-%d')
         
-        # 为今天的规则创建日期目录
-        mkdir -p "./$TODAY/full"
-        mkdir -p "./$TODAY/lite"
+        # 为今天的规则在 archive 目录下创建日期归档
+        mkdir -p "./archive/$TODAY/full"
+        mkdir -p "./archive/$TODAY/lite"
         
-        # 注意：从工作区根目录复制新生成的文件到 output 目录
-        cp ../rules/merged_all.txt "./$TODAY/full/"
-        cp ../rules/merged_lite.txt "./$TODAY/lite/"
-        cp ../rules/merge_stats.txt "./$TODAY/full/" 2>/dev/null || true
-        cp ../rules/optimization_stats.txt "./$TODAY/lite/" 2>/dev/null || true
+        # 从工作区根目录复制新生成的文件到归档目录
+        cp ../rules/merged_all.txt "./archive/$TODAY/full/"
+        cp ../rules/merged_lite.txt "./archive/$TODAY/lite/"
+        cp ../rules/merge_stats.txt "./archive/$TODAY/full/" 2>/dev/null || true
+        cp ../rules/optimization_stats.txt "./archive/$TODAY/lite/" 2>/dev/null || true
+        
+        # === 自动清理旧文件（在 archive 目录内操作，保留最近30天）===
+        echo "正在清理30天前的历史文件..."
+        find ./archive -maxdepth 1 -type d -name "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]" -mtime +30 2>/dev/null | while read old_dir; do
+          echo "删除历史归档目录: $old_dir"
+          rm -rf "$old_dir"
+        done
+        
+        # ========== 创建/更新固定链接目录 ==========
+        echo "更新固定链接目录 (latest)..."
+        mkdir -p "./latest/full"
+        mkdir -p "./latest/lite"
+        # 将今日文件复制到 latest 目录，覆盖旧版本
+        cp "./archive/$TODAY/full/merged_all.txt" "./latest/full/"
+        cp "./archive/$TODAY/lite/merged_lite.txt" "./latest/lite/"
+        # 同时复制统计文件
+        cp "./archive/$TODAY/full/merge_stats.txt" "./latest/full/" 2>/dev/null || true
+        cp "./archive/$TODAY/lite/optimization_stats.txt" "./latest/lite/" 2>/dev/null || true
         
         # --- 生成或更新索引文件 (index.md) ---
-        # 如果索引文件不存在，创建它并写入初始内容
-        if [ ! -f "./index.md" ]; then
-          echo "# 📁 AdGuard 规则仓库索引" > ./index.md
-          echo "" >> ./index.md
-          echo "此分支包含自动生成的 AdGuard 规则文件，按日期和版本分类归档。" >> ./index.md
-          echo "" >> ./index.md
-          echo "**存档策略**：自动保留最近30天的历史文件，更早的文件将被自动清理。" >> ./index.md
-          echo "" >> ./index.md
-          echo "## 📅 最新文件 (适用于快速使用)" >> ./index.md
-          echo "" >> ./index.md
-          echo "| 版本 | 文件 | 规则数量 | 大小 | 生成时间 |" >> ./index.md
-          echo "| :--- | :--- | :--- | :--- | :--- |" >> ./index.md
-        fi
-        
-        # 获取文件的规则行数 (跳过注释行和空行)
-        FULL_COUNT=$(grep -c -v -E '^!|^$' "./$TODAY/full/merged_all.txt" 2>/dev/null || echo "N/A")
-        LITE_COUNT=$(grep -c -v -E '^!|^$' "./$TODAY/lite/merged_lite.txt" 2>/dev/null || echo "N/A")
-        
-        # 获取文件大小
-        FULL_SIZE=$(du -h "./$TODAY/full/merged_all.txt" 2>/dev/null | cut -f1)
-        LITE_SIZE=$(du -h "./$TODAY/lite/merged_lite.txt" 2>/dev/null | cut -f1)
-        
-        # 生成时间戳
-        TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
-        
         # 重建索引文件
         echo "# 📁 AdGuard 规则仓库索引" > ./index.md
         echo "" >> ./index.md
-        echo "此分支包含自动生成的 AdGuard 规则文件，按日期和版本分类归档。" >> ./index.md
+        echo "此分支包含自动生成的 AdGuard 规则文件。" >> ./index.md
         echo "" >> ./index.md
-        echo "**存档策略**：自动保留最近30天的历史文件，更早的文件将被自动清理。" >> ./index.md
+        echo "## 🚀 快速订阅（推荐）" >> ./index.md
         echo "" >> ./index.md
-        echo "## 📅 最新文件 (适用于快速使用)" >> ./index.md
+        echo "如需在 AdGuard Home 中设置订阅，请使用以下**固定链接**，无需每日更改：" >> ./index.md
         echo "" >> ./index.md
-        echo "| 版本 | 文件 | 规则数量 | 大小 | 生成时间 |" >> ./index.md
+        echo "- **精简版规则 (Lite)**: [\`/latest/lite/merged_lite.txt\`](./latest/lite/merged_lite.txt)" >> ./index.md
+        echo "- **完整版规则 (Full)**: [\`/latest/full/merged_all.txt\`](./latest/full/merged_all.txt)" >> ./index.md
+        echo "" >> ./index.md
+        echo "## 📅 今日生成的文件" >> ./index.md
+        echo "" >> ./index.md
+        echo "| 版本 | 归档位置 | 规则数量 | 大小 | 生成时间 |" >> ./index.md
         echo "| :--- | :--- | :--- | :--- | :--- |" >> ./index.md
-        echo "| **完整版** | [$TODAY/full/merged_all.txt](./$TODAY/full/merged_all.txt) | $FULL_COUNT 条 | $FULL_SIZE | $TIMESTAMP |" >> ./index.md
-        echo "| **精简版** | [$TODAY/lite/merged_lite.txt](./$TODAY/lite/merged_lite.txt) | $LITE_COUNT 条 | $LITE_SIZE | $TIMESTAMP |" >> ./index.md
+        
+        # 获取今日文件的规则行数和大小
+        FULL_COUNT=$(grep -c -v -E '^!|^$' "./archive/$TODAY/full/merged_all.txt" 2>/dev/null || echo "N/A")
+        LITE_COUNT=$(grep -c -v -E '^!|^$' "./archive/$TODAY/lite/merged_lite.txt" 2>/dev/null || echo "N/A")
+        FULL_SIZE=$(du -h "./archive/$TODAY/full/merged_all.txt" 2>/dev/null | cut -f1)
+        LITE_SIZE=$(du -h "./archive/$TODAY/lite/merged_lite.txt" 2>/dev/null | cut -f1)
+        TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
+        
+        echo "| 完整版 | [\`archive/$TODAY/full/merged_all.txt\`](./archive/$TODAY/full/merged_all.txt) | $FULL_COUNT 条 | $FULL_SIZE | $TIMESTAMP |" >> ./index.md
+        echo "| 精简版 | [\`archive/$TODAY/lite/merged_lite.txt\`](./archive/$TODAY/lite/merged_lite.txt) | $LITE_COUNT 条 | $LITE_SIZE | $TIMESTAMP |" >> ./index.md
         
         echo "" >> ./index.md
-        echo "## 📚 历史归档 (最近30天)" >> ./index.md
+        echo "## 📚 历史归档" >> ./index.md
+        echo "" >> ./index.md
+        echo "**存档策略**：自动保留最近30天的历史文件，存放于 \`archive/\` 目录下。更早的文件将被自动清理。" >> ./index.md
         echo "" >> ./index.md
         echo "> 提示：点击日期可展开查看该日生成的所有文件。" >> ./index.md
         echo "" >> ./index.md
         
         # 按日期倒序列出所有历史日期目录（清理后最多30个）
-        for DATE_DIR in $(ls -d 20*/ 2>/dev/null | sort -r); do
+        for DATE_DIR in $(ls -d ./archive/20*/ 2>/dev/null | sort -r); do
+          DATE_DIR=${DATE_DIR#./archive/} # 移除前面的 ./archive/
           DATE_DIR=${DATE_DIR%/} # 移除结尾的斜杠
           if [ "$DATE_DIR" != "$TODAY" ]; then
             echo "<details>" >> ./index.md
@@ -135,13 +136,13 @@ jobs:
             echo "" >> ./index.md
             echo "| 版本 | 文件 | 大小 |" >> ./index.md
             echo "| :--- | :--- | :--- |" >> ./index.md
-            if [ -f "./$DATE_DIR/full/merged_all.txt" ]; then
-              SIZE=$(du -h "./$DATE_DIR/full/merged_all.txt" 2>/dev/null | cut -f1)
-              echo "| 完整版 | [$DATE_DIR/full/merged_all.txt](./$DATE_DIR/full/merged_all.txt) | $SIZE |" >> ./index.md
+            if [ -f "./archive/$DATE_DIR/full/merged_all.txt" ]; then
+              SIZE=$(du -h "./archive/$DATE_DIR/full/merged_all.txt" 2>/dev/null | cut -f1)
+              echo "| 完整版 | [$DATE_DIR/full/merged_all.txt](./archive/$DATE_DIR/full/merged_all.txt) | $SIZE |" >> ./index.md
             fi
-            if [ -f "./$DATE_DIR/lite/merged_lite.txt" ]; then
-              SIZE=$(du -h "./$DATE_DIR/lite/merged_lite.txt" 2>/dev/null | cut -f1)
-              echo "| 精简版 | [$DATE_DIR/lite/merged_lite.txt](./$DATE_DIR/lite/merged_lite.txt) | $SIZE |" >> ./index.md
+            if [ -f "./archive/$DATE_DIR/lite/merged_lite.txt" ]; then
+              SIZE=$(du -h "./archive/$DATE_DIR/lite/merged_lite.txt" 2>/dev/null | cut -f1)
+              echo "| 精简版 | [$DATE_DIR/lite/merged_lite.txt](./archive/$DATE_DIR/lite/merged_lite.txt) | $SIZE |" >> ./index.md
             fi
             echo "" >> ./index.md
             echo "</details>" >> ./index.md
@@ -149,7 +150,7 @@ jobs:
           fi
         done
         
-        echo "文件已整理并索引完成。"
+        echo "文件整理、索引及历史清理完成。"
 
     # 5. 提交并推送所有更改到 rules 分支
     - name: Commit and Push All to rules branch
