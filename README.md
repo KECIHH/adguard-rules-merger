@@ -1,40 +1,65 @@
-# AdGuard Home 规则合并器
+AdGuard Home 规则更新工具
 
-自动合并多个AdGuard Home规则，去除重复规则，并定期更新。
+自动从多个来源抓取、合并和优化 AdGuard Home 规则，生成精简高效的过滤规则。
+使用方法
+1. 准备规则源
 
-## 功能特点
+编辑 sources/sources.txt 文件，每行添加一个规则源 URL：
+text
 
-- ✅ 自动抓取多个规则源
-- ✅ 智能去重，移除重复规则
-- ✅ 自动分类（DNS规则/元素隐藏规则）
-- ✅ 每天自动更新
-- ✅ 支持手动触发更新
+# 示例规则源
+https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
+https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
 
-## 使用方法
+2. 运行更新脚本
 
-### 在AdGuard Home中使用
+按顺序执行三个脚本：
+bash
 
-1. 打开AdGuard Home管理界面
-2. 进入"过滤器" -> "DNS封锁列表"
-3. 点击"添加阻止列表"
-4. 输入以下URL：
-https://raw.githubusercontent.com/KECIHH/adguard-rules-merger/rules/rules/merged_all.txt
-5. 点击"保存"
+# 1. 抓取所有规则
+python3 scripts/fetch_rules.py
 
-### 规则分类
+# 2. 合并并去重
+python3 scripts/merge_rules.py
 
-- **merged_all.txt** - 所有规则的合并版本
-- **merged_dns.txt** - 仅DNS过滤规则
-- **merged_dns_lite.txt** - 精简DNS过滤规则
-- **mmerged_lite.txt** - 精简过滤规则
+# 3. 优化精简
+python3 scripts/optimize_rules.py
 
-## 自定义规则源
+3. 获取结果
 
-编辑 `sources/sources.txt` 文件，每行添加一个规则URL：
+处理完成后，在 rules/ 目录下会生成：
 
-```txt
-# 基础规则
-https://example.com/rule1.txt
+    merged_lite.txt - 精简版规则（推荐使用）
 
-# 隐私保护规则
-https://example.com/rule2.txt
+    merged_all.txt - 完整版规则
+
+
+
+文件说明
+text
+
+.
+├── sources/
+│   └── sources.txt      # 规则源列表
+├── scripts/
+│   ├── fetch_rules.py   # 抓取规则
+│   ├── merge_rules.py   # 合并去重
+│   └── optimize_rules.py # 优化精简
+├── rules/               # 输出目录
+│   ├── merged_all.txt   # 完整规则
+│   └── merged_lite.txt  # 精简规则
+└── temp/                # 临时文件（自动生成）
+
+注意事项
+
+    确保网络畅通，能访问规则源
+
+    精简规则约15万条，适合大多数用户
+
+    完整规则可能超过50万条，请根据需要选择
+
+    临时目录会自动清理
+
+许可证
+
+MIT License
